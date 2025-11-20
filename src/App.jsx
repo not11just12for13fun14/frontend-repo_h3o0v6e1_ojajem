@@ -1,107 +1,136 @@
-import { useEffect, useState } from 'react'
-import Header from './components/Header'
-import Hero from './components/Hero'
-import RestaurantCard from './components/RestaurantCard'
-import RestaurantModal from './components/RestaurantModal'
-import Cart from './components/Cart'
+import { useEffect, useMemo, useState } from 'react'
+import SiteHeader from './components/SiteHeader'
+import CreatorCard from './components/CreatorCard'
+import ChatWindow from './components/ChatWindow'
 
 function App() {
   const baseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
-  const [loading, setLoading] = useState(true)
-  const [restaurants, setRestaurants] = useState([])
-  const [selected, setSelected] = useState(null)
-  const [menu, setMenu] = useState([])
-  const [cart, setCart] = useState([])
+  const [creators, setCreators] = useState([])
   const [seeding, setSeeding] = useState(false)
+  const [me, setMe] = useState(null) // local user (customer)
+  const [chat, setChat] = useState(null)
+  const [messages, setMessages] = useState([])
 
-  const fetchRestaurants = async () => {
-    try {
-      setLoading(true)
-      const res = await fetch(`${baseUrl}/restaurants`)
-      if (!res.ok) throw new Error('Failed')
-      const data = await res.json()
-      setRestaurants(data)
-    } catch (e) {
-      setRestaurants([])
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const viewRestaurant = async (r) => {
-    setSelected(r)
-    try {
-      const res = await fetch(`${baseUrl}/restaurants/${r.id}/menu`)
-      const data = await res.json()
-      setMenu(data)
-    } catch (e) {
-      setMenu([])
-    }
-  }
-
-  const addToCart = (item) => {
-    setCart(prev => {
-      const existing = prev.find(i => i.id === item.id)
-      if (existing) {
-        return prev.map(i => i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i)
-      }
-      return [...prev, { ...item, quantity: 1 }]
-    })
-  }
-
-  const clearCart = () => setCart([])
+  const eur = useMemo(() => (n) => Number(n || 0).toFixed(2), [])
 
   const seed = async () => {
     try {
       setSeeding(true)
       await fetch(`${baseUrl}/seed`, { method: 'POST' })
-      await fetchRestaurants()
+      await fetchCreators()
     } finally {
       setSeeding(false)
     }
   }
 
-  useEffect(() => { fetchRestaurants() }, [])
+  const fetchCreators = async () => {
+    try {
+      const res = await fetch(`${baseUrl}/creators`)
+      const data = await res.json()
+      setCreators(data)
+    } catch (e) {
+      setCreators([])
+    }
+  }
+
+  const createAccount = async () => {
+    const name = prompt('Your name?') || 'Guest'
+    // by default create a customer account
+    const res = await fetch(`${baseUrl}/users`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, role: 'customer' }) })
+    const data = await res.json()
+    setMe({ id: data.user_id, ...data.user })
+  }
+
+  const switchUser = () => {
+    setMe(null)
+    setChat(null)
+    setMessages([])
+  }
+
+  const ensureFunds = async () => {
+    if (!me) return false
+    if ((me.wallet_eur || 0) >= 3) return true
+    const ok = confirm('Top up €5 to start chatting?')
+    if (!ok) return false
+    const res = await fetch(`${baseUrl}/wallet/topup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_id: me.id, amount_eur: 5 }) })
+    const data = await res.json()
+    setMe(prev => ({ ...prev, wallet_eur: data.wallet_eur }))
+    return true
+  }
+
+  const startChat = async (creator) => {
+    if (!me) {
+      alert('Create an account first')
+      return
+    }
+    const ok = await ensureFunds()
+    if (!ok) return
+    const res = await fetch(`${baseUrl}/chats`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ creator_id: creator.id, customer_id: me.id }) })
+    const data = await res.json()
+    setChat({ id: data.chat_id, ...data.chat, creator })
+    setMessages([])
+  }
+
+  const loadMessages = async () => {
+    if (!chat) return
+    try {
+      const res = await fetch(`${baseUrl}/chats/${chat.id}/messages`)
+      const data = await res.json()
+      setMessages(data)
+    } catch {}
+  }
+
+  const sendMessage = async (text) => {
+    if (!chat || !me) return
+    await fetch(`${baseUrl}/chats/${chat.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sender_id: me.id, content: text }) })
+    await loadMessages()
+  }
+
+  const endChat = async () => {
+    if (!chat) return
+    const res = await fetch(`${baseUrl}/chats/${chat.id}/end`, { method: 'POST' })
+    const data = await res.json()
+    alert(`Chat ended. Duration: ${data.total_minutes} min, Cost: €${eur(data.total_cost_eur)}`)
+    // update wallet
+    const meRes = await fetch(`${baseUrl}/users/${me.id}`)
+    const meData = await meRes.json()
+    setMe(meData)
+    setChat(null)
+    setMessages([])
+  }
+
+  useEffect(() => { fetchCreators() }, [])
+  useEffect(() => { const t = setInterval(loadMessages, 1500); return () => clearInterval(t) }, [chat?.id])
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-orange-50 via-rose-50 to-amber-50">
-      <Header onSeed={seed} seeding={seeding} backendUrl={baseUrl} />
-      <Hero />
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50">
+      <SiteHeader onSeed={seed} seeding={seeding} onCreate={createAccount} onSwitch={switchUser} me={me} eur={eur} />
 
-      <section className="max-w-6xl mx-auto px-4 py-10">
-        <div className="flex items-baseline justify-between mb-4">
-          <h2 className="text-2xl font-bold text-gray-900">Popular near you</h2>
-          <a href="/test" className="text-sm text-gray-600 hover:text-gray-900">Check connection</a>
+      <section className="max-w-6xl mx-auto px-4 pt-10 pb-24">
+        <div className="text-center mb-10">
+          <h2 className="text-3xl sm:text-4xl font-extrabold text-gray-900 tracking-tight">Chat, connect, and earn — in euros</h2>
+          <p className="mt-3 text-gray-600 max-w-2xl mx-auto">Creators set their per‑minute rate in EUR. Customers top up and start a private chat instantly. UK based, global reach.</p>
         </div>
-        {loading ? (
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="h-64 bg-white rounded-2xl border border-gray-200 animate-pulse" />
-            ))}
-          </div>
-        ) : restaurants.length === 0 ? (
+
+        {creators.length === 0 ? (
           <div className="bg-white border border-dashed border-gray-300 rounded-2xl p-10 text-center">
-            <div className="text-gray-700 font-medium">No restaurants yet</div>
-            <div className="text-sm text-gray-500 mt-1">Click the button above to load sample data</div>
+            <div className="text-gray-700 font-medium">No creators yet</div>
+            <div className="text-sm text-gray-500 mt-1">Click the button above to load sample creators</div>
           </div>
         ) : (
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {restaurants.map(r => (
-              <RestaurantCard key={r.id} restaurant={r} onView={viewRestaurant} />)
-            )}
+            {creators.map(c => (
+              <CreatorCard key={c.id} creator={c} onStart={startChat} />
+            ))}
           </div>
         )}
       </section>
 
-      {selected && (
-        <RestaurantModal restaurant={selected} menu={menu} onClose={() => setSelected(null)} onAdd={addToCart} />
+      {chat && (
+        <ChatWindow chat={chat} me={me} onSend={sendMessage} messages={messages} onEnd={endChat} />
       )}
 
-      {cart.length > 0 && (
-        <Cart items={cart} onClear={clearCart} />
-      )}
-
-      <footer className="py-12 text-center text-sm text-gray-500">© {new Date().getFullYear()} FoodDash — Built for demo</footer>
+      <footer className="py-12 text-center text-sm text-gray-500">© {new Date().getFullYear()} Chatjob — UK based • Paid in EUR</footer>
     </div>
   )
 }
